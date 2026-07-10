@@ -1,11 +1,40 @@
 import axios, { type AxiosInstance } from 'axios';
 import type { AuthResult } from '../types';
 
-/** Extracts the backend's ExceptionHandlingMiddleware `{ status, title }` body, if present. */
+/**
+ * Extracts a readable message from an API error response. Two distinct shapes exist:
+ *  - ExceptionHandlingMiddleware's own `{ status, title }` for exceptions thrown in a command
+ *    handler (e.g. ValidationException) - `title` is already the specific message.
+ *  - ASP.NET Core's automatic `ValidationProblemDetails` for model-binding failures (invalid
+ *    JSON, a JSON value that doesn't convert to the target type/enum) - these never reach the
+ *    controller or ExceptionHandlingMiddleware at all, so `title` alone is just the generic
+ *    "One or more validation errors occurred." with the actual reason sitting in `errors`.
+ * Only ever relays text the server itself produced - never echoes request field values, so this
+ * cannot leak a submitted stream key even if a field named e.g. "streamKey" appears as a key.
+ */
 export function extractErrorMessage(err: unknown, fallback: string): string {
-  if (axios.isAxiosError(err) && typeof err.response?.data?.title === 'string') {
-    return err.response.data.title;
+  if (!axios.isAxiosError(err)) {
+    return fallback;
   }
+
+  const data: unknown = err.response?.data;
+  if (data && typeof data === 'object') {
+    const errors = (data as { errors?: unknown }).errors;
+    if (errors && typeof errors === 'object') {
+      const messages = Object.entries(errors as Record<string, unknown>).flatMap(([field, value]) =>
+        Array.isArray(value) ? value.filter((m): m is string => typeof m === 'string').map((m) => `${field}: ${m}`) : []
+      );
+      if (messages.length > 0) {
+        return messages.join(' ');
+      }
+    }
+
+    const title = (data as { title?: unknown }).title;
+    if (typeof title === 'string' && title.length > 0) {
+      return title;
+    }
+  }
+
   return fallback;
 }
 
