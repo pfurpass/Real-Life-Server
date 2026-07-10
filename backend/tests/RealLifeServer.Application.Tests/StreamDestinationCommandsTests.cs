@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using RealLifeServer.Application.Channels.Commands;
 using RealLifeServer.Application.Common.Exceptions;
@@ -364,6 +365,17 @@ public class StreamDestinationCommandsTests
         public DbSet<HeartbeatRecord> HeartbeatRecords => Set<HeartbeatRecord>();
         public DbSet<AuditLogEntry> AuditLogEntries => Set<AuditLogEntry>();
         public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
+
+        // Mirrors the JSONB conversion from the real ChannelConfiguration
+        // (RealLifeServer.Infrastructure, not referenced by this test project) - without it, EF
+        // Core's default convention treats SceneThresholds as a navigation to a keyless entity
+        // type and model validation fails before any test can run.
+        protected override void OnModelCreating(ModelBuilder builder)
+        {
+            builder.Entity<Channel>().Property(c => c.SceneThresholds).HasConversion(
+                v => JsonSerializer.Serialize(v, (JsonSerializerOptions?)null),
+                v => JsonSerializer.Deserialize<SceneThresholds>(v, (JsonSerializerOptions?)null) ?? new SceneThresholds());
+        }
     }
 
     private static TestDbContext CreateInMemoryDb(string name) =>
