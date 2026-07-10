@@ -35,4 +35,8 @@
     <ProjectReference Include="..\RealLifeServer.Application\RealLifeServer.Application.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="RealLifeServer.Infrastructure.Tests" />
+  </ItemGroup>
+
 </Project>

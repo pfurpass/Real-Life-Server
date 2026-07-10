@@ -21,12 +21,29 @@ public class StreamOrchestrator(
 
     private readonly ConcurrentDictionary<Guid, ISceneEncoder> _encoders = new();
     private readonly ConcurrentDictionary<Guid, IAsyncDisposable> _locks = new();
+    private readonly ConcurrentDictionary<Guid, RestartAttemptState> _restartState = new();
 
     public async Task EnsureEncoderRunningAsync(Channel channel, IReadOnlyList<StreamDestination> destinations, CancellationToken ct = default)
     {
         if (_encoders.TryGetValue(channel.Id, out var existing) && existing.IsRunning)
         {
             return;
+        }
+
+        // Item 10: SceneMonitorHostedService's self-healing check calls this every ~2s whenever
+        // the encoder isn't running - without this gate, a persistently failing start (e.g. the
+        // reported RTSP-without-a-publisher crash) would retry every single tick forever.
+        if (_restartState.TryGetValue(channel.Id, out var attempt))
+        {
+            var requiredDelay = RestartBackoff.DelayFor(attempt.ConsecutiveFailures);
+            var elapsed = DateTimeOffset.UtcNow - attempt.LastAttemptAt;
+            if (attempt.ConsecutiveFailures > 0 && elapsed < requiredDelay)
+            {
+                logger.LogDebug(
+                    "Channel {ChannelId}: backing off compositor start ({Elapsed} elapsed of {Required} required after {Failures} consecutive failures)",
+                    channel.Id, elapsed, requiredDelay, attempt.ConsecutiveFailures);
+                return;
+            }
         }
 
         // Only one media node may run this channel's compositor at a time (docs/CONCEPT.md,
@@ -47,8 +64,31 @@ public class StreamOrchestrator(
             .Select(d => $"{d.RtmpUrl.TrimEnd('/')}/{encryption.Decrypt(d.StreamKeyEncrypted)}")
             .ToList();
 
-        await encoder.StartAsync(channel, resolvedUrls, ct);
+        var state = _restartState.GetOrAdd(channel.Id, _ => new RestartAttemptState());
+        state.LastAttemptAt = DateTimeOffset.UtcNow;
+
+        try
+        {
+            await encoder.StartAsync(channel, resolvedUrls, ct);
+        }
+        catch (Exception ex)
+        {
+            state.ConsecutiveFailures++;
+            logger.LogError(ex,
+                "Failed to start compositor for channel {ChannelId} (attempt {Attempt}, next retry no earlier than {Delay})",
+                channel.Id, state.ConsecutiveFailures, RestartBackoff.DelayFor(state.ConsecutiveFailures));
+
+            encoder.ProcessExitedUnexpectedly -= OnEncoderCrashed;
+            await encoder.DisposeAsync();
+            if (_locks.TryRemove(channel.Id, out var failedLease))
+            {
+                await failedLease.DisposeAsync();
+            }
+            return; // swallow: a failed compositor start must not break the caller (e.g. the publish auth webhook)
+        }
+
         _encoders[channel.Id] = encoder;
+        state.ConsecutiveFailures = 0;
     }
 
     public async Task ApplySceneAsync(Guid channelId, SceneState state, TimeSpan? countdown = null, CancellationToken ct = default)
@@ -85,13 +125,26 @@ public class StreamOrchestrator(
         logger.LogCritical("Compositor process for channel {ChannelId} crashed with exit code {ExitCode}. It will be restarted on the next monitor tick.", channelId, exitCode);
         _encoders.TryRemove(channelId, out _);
 
-        // Release our own lock immediately so the restart attempt (same node, next monitor
-        // tick) is not blocked behind its own now-stale lease until the TTL expires.
+        // Counts toward the same backoff gate as a failed StartAsync call, so a compositor that
+        // starts successfully but then crashes repeatedly (e.g. every mode-switch restart
+        // failing) is throttled too, not just an outright failed start.
+        var state = _restartState.GetOrAdd(channelId, _ => new RestartAttemptState());
+        state.ConsecutiveFailures++;
+        state.LastAttemptAt = DateTimeOffset.UtcNow;
+
+        // Release our own lock immediately so the restart attempt (same node, once backoff
+        // allows it) is not blocked behind its own now-stale lease until the TTL expires.
         if (_locks.TryRemove(channelId, out var lease))
         {
             _ = lease.DisposeAsync().AsTask().ContinueWith(
                 t => logger.LogWarning(t.Exception, "Failed to release channel lock for {ChannelId} after crash", channelId),
                 TaskContinuationOptions.OnlyOnFaulted);
         }
+    }
+
+    private sealed class RestartAttemptState
+    {
+        public DateTimeOffset LastAttemptAt;
+        public int ConsecutiveFailures;
     }
 }

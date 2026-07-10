@@ -22,7 +22,14 @@ public interface ISceneEncoder : IAsyncDisposable
     /// </summary>
     Task StartAsync(Channel channel, IReadOnlyList<string> destinationRtmpUrls, CancellationToken ct = default);
 
-    /// <summary>Switches the visible scene layer without restarting the outbound RTMP connection (Zmq strategy) or with a brief restart (RestartableFallback strategy).</summary>
+    /// <summary>
+    /// Switches the visible scene layer. RestartableFallback always restarts the process.
+    /// Zmq restarts the process only when the target state's live-input requirement changes
+    /// (Live/Degraded vs. everything else) - MediaMTX does not let it hold an RTSP input open
+    /// with no publisher, and FFmpeg cannot add/remove that input without a restart; all other
+    /// transitions are runtime zmq commands with no interruption to the outbound connection.
+    /// See docs/CONCEPT.md chapter 4.1.
+    /// </summary>
     Task ApplySceneAsync(SceneState state, TimeSpan? countdown = null, CancellationToken ct = default);
 
     Task StopAsync(CancellationToken ct = default);

@@ -108,6 +108,13 @@ public sealed class RestartableFallbackSceneEncoder(
 
         _intentionalStop = false;
         var process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
+        process.ErrorDataReceived += (_, e) =>
+        {
+            if (!string.IsNullOrWhiteSpace(e.Data))
+            {
+                _logger.LogInformation("ffmpeg[{ChannelId}]: {Line}", channelId, e.Data);
+            }
+        };
         process.Exited += (_, _) =>
         {
             if (!_intentionalStop)

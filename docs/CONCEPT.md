@@ -156,62 +156,128 @@ Kernlogik ergänzen.
 
 ## 4. Die Streaming-Pipeline im Detail
 
-### 4.1 Warum "Compositing" statt "Quellenwechsel per Neustart"
+### 4.1 Warum "Compositing" statt "Quellenwechsel per Neustart" — und die reale Grenze davon
 
 Ein naiver Ansatz würde bei Verbindungsverlust den FFmpeg-Prozess killen und mit einem neuen
 Input (Slate-Video) neu starten. Das funktioniert, verursacht aber jedes Mal eine neue
 RTMP-Verbindung zur Zielplattform (1-5 s Unterbrechung, Twitch zeigt kurz "reconnecting").
 
-RLS verwendet stattdessen einen **dauerhaft laufenden Compositor-Prozess pro Kanal**, der
-mehrere Eingänge gleichzeitig offen hält und nur die *sichtbare Ebene* umschaltet:
+> **Korrektur (Produktionsfund):** Eine frühere Fassung dieses Kapitels ging davon aus, dass ein
+> MediaMTX-RTSP-Reader ohne aktiven Publisher unbegrenzt wartet, statt die Verbindung zu
+> terminieren. Das ist für MediaMTX v1.19.2 **falsch** — ein Reader auf einem Pfad ohne
+> Publisher bekommt sofort `no stream is available on path` und FFmpeg beendet sich mit
+> Exitcode 1. Da der Compositor diesen RTSP-Input *immer* zu öffnen versuchte — auch während
+> BRB/Reconnecting/Offline, also praktisch die meiste Zeit im Leben eines Kanals — führte das zu
+> einer Absturzschleife alle ~2 Sekunden. Das folgende Kapitel beschreibt die korrigierte
+> Architektur.
+
+RLS verwendet einen **Compositor-Prozess pro Kanal**, der mehrere Eingänge gleichzeitig offen
+hält und die *sichtbare Ebene* per zmq umschaltet — aber in einem von **zwei sich gegenseitig
+ausschließenden Modi**, je nachdem ob gerade ein Live-Signal erwartet wird:
 
 ```
-Input 0: rtmp://127.0.0.1/live/{key}   (Live-Encoder, mit -reconnect Flags)
-Input 1: loop von brb.mp4               (endlos wiederholtes Video)
-Input 2: loop von reconnecting.mp4 + drawtext-Overlay (Countdown)
-Input 3: loop von offline.mp4
+NoLiveInput-Modus (Offline, Connecting, Reconnecting, Brb — der Normalfall)
+  Input 0: -f lavfi color=c=black:s=WxH   (trivialer Filler, öffnet nie fehlschlagend)
+  Input 1: loop von brb.mp4
+  Input 2: loop von reconnecting.mp4 + drawtext-Overlay (Countdown)
+  Input 3: loop von offline.mp4
+  Input 4: -f lavfi anullsrc              (Stille, da der Filler keine eigene Audiospur hat)
 
-filter_complex:
-  [0:v] setpts, scale                       -> live
-  [1:v] setpts, scale                       -> brb
-  [2:v] setpts, scale, drawtext(reinit)     -> reconnecting
-  [3:v] setpts, scale                       -> offline
-  [live][brb]      overlay@sceneLive        (enable per zmq gesteuert, 0 oder 1)
-  [.][reconnecting] overlay@sceneReconnect
-  [.][offline]      overlay@sceneOffline
-  -> finale Ausgabe-Ebene
+LiveInput-Modus (Live, Degraded — erst NACH bestätigtem FirstKeyframeReceived betreten)
+  Input 0: rtsp://mediamtx:8554/live/{key}   (echtes Live-Signal)
+  Input 1: loop von brb.mp4
+  Input 2: loop von reconnecting.mp4 + drawtext-Overlay (Countdown)
+  Input 3: loop von offline.mp4
 
-zmq-Filter hört auf tcp://127.0.0.1:<port pro Kanal>
+filter_complex (identisch in beiden Modi, nur Input 0 unterscheidet sich):
+  [0:v] scale, pad, setpts                  -> base   (live ODER Filler, IMMER sichtbar als unterste Ebene)
+  [1:v] scale, setpts                       -> brb
+  [2:v] scale, setpts, drawtext@txtCountdown -> reconnecting
+  [3:v] scale, setpts                       -> offline
+  [base][brb]         overlay@ovBrb=enable=0/1        -> ov1
+  [ov1][reconnecting]  overlay@ovReconnect=enable=0/1  -> ov2
+  [ov2][offline]       overlay@ovOffline=enable=0/1    -> ov3
+  [ov3] zmq=bind_address=tcp\://127.0.0.1\:<port pro Kanal> -> Ausgabe
 ```
+
+`base` ist absichtlich **keine** eigene per-zmq schaltbare Ebene — sie ist immer die unterste
+Schicht und damit implizit sichtbar, sobald keine der drei Overlay-Ebenen aktiviert ist. Das war
+in der vorherigen Fassung anders (und fehlerhaft): dort gab es einen Toggle-Namen `ovLive`, der
+tatsächlich die BRB-Ebene steuerte, während der const-Name `ovBrb` nirgends im Filtergraphen real
+existierte — Kommandos an `ovBrb` liefen daher immer in einen zmq-Timeout, unabhängig vom hier
+behobenen Absturzproblem.
+
+**Wechsel *innerhalb* eines Modus** (z. B. Reconnecting → Brb, oder Live → Degraded) ist ein
+reines zmq-Kommando — kein Prozess-Neustart, keine Unterbrechung der ausgehenden RTMP-Verbindung.
+
+**Wechsel *zwischen* den beiden Modi** (Encoder verbindet zum ersten Mal / verliert die
+Verbindung) erfordert dagegen einen vollständigen Prozess-Neustart: FFmpeg kann seinen
+Filtergraphen nach dem Start nicht mehr strukturell verändern — ein Input lässt sich per zmq
+weder hinzufügen noch entfernen. Das ist eine reale technische Grenze von FFmpeg, kein
+Implementierungsdetail, das sich "besser lösen" ließe, solange man bei FFmpeg als Compositing-
+Engine bleibt (siehe Kapitel 4.1.1 für Alternativen). Der ausgehende Twitch/YouTube-Stream
+reconnectet daher an genau zwei Momenten im Leben eines Kanals: sobald der mobile Encoder zum
+ersten Mal Bild liefert (`FirstKeyframeReceived`) und sobald er die Verbindung verliert
+(`EncoderDisconnected`) — begrenzt, vorhersagbar, und (siehe Kapitel 4.1.2)
+Backoff-limitiert, statt der vorherigen Absturzschleife alle 2 Sekunden.
+
+`ZmqSceneEncoder` orchestriert das: `ApplySceneAsync(state)` bestimmt aus dem Zielzustand, ob
+der aktuell laufende Prozess-Modus noch passt; falls nicht, restart (mit Backoff, s. u.); danach
+werden die drei Overlay-Namen sowie ggf. der Countdown-Text per zmq gesetzt.
+
+#### 4.1.1 Warum kein "permanenter interner Filler-Publisher" (bewusste Entscheidung)
+
+Eine robustere, aber deutlich aufwändigere Alternative wäre ein permanent laufender interner
+"Filler/Relay"-Prozess, der *immer* auf einen internen MediaMTX-Pfad publiziert (echtes
+Live-Signal, wenn vorhanden, sonst ein lokales Loop-Video) — der eigentliche Compositor würde
+dann von diesem *immer aktiven* internen Pfad lesen und müsste selbst nie neu starten. Das
+verschiebt das Neustart-Problem aber nur eine Ebene tiefer: Auch der Filler-Prozess kann seinen
+eigenen Input nicht ohne Neustart wechseln, sein Neustart reißt beim lesenden Compositor
+denselben "kein Publisher"-Fehler auf, den dieses Kapitel gerade behebt — nur einmal mehr
+indirekt. Eine echte, neustartfreie Quellenumschaltung gibt es in der Praxis nur mit
+Media-Frameworks, die dynamische Pipeline-Rekonfiguration unterstützen (z. B. GStreamers
+`input-selector`-Element) — das wäre ein Wechsel der Compositing-Engine, kein Bugfix, und bewusst
+außerhalb des Umfangs dieser Änderung. Der zweistufige, Backoff-limitierte Neustart-Ansatz oben
+ist der pragmatische, mit FFmpeg tatsächlich umsetzbare Kompromiss.
+
+#### 4.1.2 Restart-Backoff
+
+Jeder Moduswechsel-Neustart (und jeder fehlgeschlagene Erststart) zählt gegen einen
+Backoff-Zähler pro Kanal (`RestartBackoff`, `StreamOrchestrator`/`ZmqSceneEncoder`):
+2 s, 4 s, 8 s, 16 s, gedeckelt bei 30 s. Ein erfolgreicher Start setzt den Zähler zurück. Damit
+degradiert eine flackernde Mobilfunkverbindung kontrolliert (zunehmender Abstand zwischen
+Versuchen) statt den Compositor und die ausgehende Verbindung im Sekundentakt zu belasten.
 
 **Warum der Compositor intern per RTSP statt RTMP von MediaMTX liest**: Ein RTMP-Client-Input in
-FFmpeg (`-i rtmp://…`) bricht sofort mit einem Fehler ab, sobald der Pfad keinen aktiven
-Publisher mehr hat — das würde den sonst persistenten Compositor-Prozess doch wieder zum
-Neustart zwingen. MediaMTX erlaubt es dagegen, sich als RTSP-Reader (`rtsp://127.0.0.1:8554/live/
-{streamKey}`) an einen Pfad zu hängen, **bevor** oder **nachdem** ein Publisher verbunden war —
-der Reader wartet einfach auf Daten, statt die Verbindung zu terminieren, und empfängt automatisch
-wieder Frames, sobald ein neuer Publisher erscheint. Der Compositor nutzt daher intern
-ausschließlich RTSP als Ingest-Quelle (`-rtsp_transport tcp`); das öffentlich vom Encoder genutzte
+FFmpeg (`-i rtmp://…`) bricht ebenfalls mit einem Fehler ab, sobald der Pfad keinen aktiven
+Publisher mehr hat. RTSP verhält sich hier nicht grundsätzlich anders (siehe Korrekturhinweis
+oben) — der Compositor öffnet die RTSP-Quelle daher ausschließlich im LiveInput-Modus, also erst
+nachdem `FirstKeyframeReceived` bestätigt hat, dass tatsächlich ein Publisher aktiv ist. Der
+Compositor nutzt intern weiterhin RTSP (`-rtsp_transport tcp`), weil MediaMTX dafür robustere
+Reconnect-Optionen und geringeren Overhead als RTMP bietet — das öffentlich vom Encoder genutzte
 RTMP/SRT/WHIP bleibt davon unberührt, da es nur MediaMTX selbst betrifft.
 
 `ZmqFilterController` (Infrastructure) sendet bei jedem Szenenwechsel Kommandos wie:
 
 ```
-Parsed_overlay_0 enable 1
-Parsed_overlay_1 enable 0
-Parsed_drawtext_0 reinit text='Verbindung wird wiederhergestellt… %{eif\:remaining\:d} s'
+ovBrb enable 1
+ovReconnect enable 0
+txtCountdown reinit text='Verbindung wird wiederhergestellt… 12s'
 ```
 
-Damit bleibt die **eine** ausgehende RTMP/RTMPS-Verbindung zu Twitch/YouTube durchgehend
-bestehen — der Wechsel passiert nur im Bildinhalt.
+Innerhalb eines Modus bleibt damit die ausgehende RTMP/RTMPS-Verbindung zu Twitch/YouTube
+durchgehend bestehen — der Wechsel passiert nur im Bildinhalt. Zwischen den Modi (s. o.) reconnectet
+sie kontrolliert, statt gar nicht mehr zu funktionieren.
 
 ### 4.2 Fallback-Modus (Kompatibilität)
 
-Für Umgebungen ohne `libzmq`-Unterstützung im FFmpeg-Build stellt
-`FfmpegCommandBuilder.BuildRestartableFallback()` eine einfachere Variante bereit: separater
-Slate-Encoder-Prozess, der bei Bedarf per `concat`-Protokoll und kurzer Crossfade-Überlappung
-übernimmt. Dokumentiert in `ISceneEncoderStrategy` — austauschbar über Konfiguration
-(`Streaming:CompositorStrategy: Zmq | RestartableFallback`).
+Für Umgebungen ohne `libzmq`-Unterstützung im FFmpeg-Build implementiert
+`RestartableFallbackSceneEncoder` eine einfachere Variante: der Prozess wird bei **jedem**
+Szenenwechsel komplett neu gestartet, mit genau einem passenden Input (Live-RTSP für
+Live/Degraded, sonst das jeweilige lokale Loop-Video) — kein Compositing, kein zmq. Entsprechend
+reconnectet die ausgehende Verbindung bei jedem Szenenwechsel, nicht nur bei den beiden
+Live-Input-Übergängen wie im Zmq-Strategie-Fall. Austauschbar über
+`Channel.CompositorStrategy: Zmq | RestartableFallback` (`ISceneEncoderFactory`).
 
 ### 4.3 Multi-Destination-Ausgabe
 
