@@ -60,9 +60,12 @@ public class AddDestinationRequestJsonTests
         var ex = Assert.Throws<JsonException>(() => JsonSerializer.Deserialize<AddDestinationRequest>(json, Options));
 
         // This is what ASP.NET Core turns into the ValidationProblemDetails "errors" entry the
-        // frontend now surfaces (see extractErrorMessage) - it must at least name the type so a
-        // reader can tell what went wrong, unlike the previous bare "validation errors occurred."
-        Assert.Contains(nameof(StreamPlatform), ex.Message);
+        // frontend now surfaces (see extractErrorMessage) - it must at least name which field
+        // failed so a reader can tell what went wrong, unlike the previous bare "validation
+        // errors occurred." (STJ's exact wording for a failed constructor-parameter conversion
+        // names the enclosing record type rather than StreamPlatform itself, so the JSON path is
+        // the one part of the message that reliably identifies the offending field.)
+        Assert.Contains("platform", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
