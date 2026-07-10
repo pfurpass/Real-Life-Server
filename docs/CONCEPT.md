@@ -295,10 +295,24 @@ werden, ohne den Compositor neu zu starten (Ziel-Liste wird beim Prozessstart au
 
 ### 4.4 Low-Latency-Vorschau
 
-MediaMTX stellt für jeden Kanal automatisch **HLS** (`http://server/hls/{key}/index.m3u8`,
-LL-HLS-fähig, ~2-4 s Latenz) sowie optional **WebRTC/WHEP** (< 1 s Latenz) für die
-Web-Vorschau bereit. Das Frontend nutzt `hls.js` für breite Browser-Kompatibilität; WHEP kann
-optional aktiviert werden (`VITE_ENABLE_WEBRTC_PREVIEW=true`) für Operator, die Latenz priorisieren.
+MediaMTX stellt für jeden Kanal automatisch **HLS** (`/hls/live/{key}/index.m3u8`, über denselben
+nginx-Origin wie das Dashboard, LL-HLS-fähig, ~2-4 s Latenz) sowie optional **WebRTC/WHEP**
+(< 1 s Latenz) für die Web-Vorschau bereit. Das Frontend nutzt `hls.js` (Media Source Extensions)
+für Chrome/Firefox/Edge, die kein natives HLS unterstützen, und die native `<video>`-Wiedergabe
+für Safari. WHEP kann optional aktiviert werden (`VITE_ENABLE_WEBRTC_PREVIEW=true`) für Operator,
+die Latenz priorisieren.
+
+**Korrektur (Produktionsfund):** Der reine `hls.js`/`nginx`-Aufbau reichte nicht aus - der
+Vorschau-Player blieb bei 0:00 schwarz, obwohl die Master-Playlist erreichbar war. Ursache:
+MediaMTX' `lowLatency`-HLS-Muxer liefert seine fMP4-Chunks über lang laufende, effektiv
+unbegrenzte Responses; nginx puffert Upstream-Antworten standardmäßig, wodurch diese Chunks nie
+(oder erst mit erheblicher Verzögerung) beim Client ankamen. Die `/hls/`-Location in
+`deploy/nginx/nginx.conf` setzt seitdem `proxy_buffering off`, `proxy_cache off`,
+`proxy_http_version 1.1` und `proxy_read_timeout 60s`. Zusätzlich unterscheidet
+`LivePreviewPlayer.tsx` jetzt technische Zustände (lädt / offline / Manifest nicht erreichbar /
+Wiedergabefehler / live) statt einer einzigen generischen Fehlermeldung, und RTMP-/SRT-URLs im
+Dashboard werden aus `window.location.hostname` abgeleitet (`frontend/src/config/serverConfig.ts`)
+statt einen `<host>`-Platzhalter oder eine feste IP anzuzeigen.
 
 ---
 

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { ChannelsApi, StreamsApi } from '../api/endpoints';
+import { buildRtmpUrl, buildSrtUrl } from '../config/serverConfig';
 import { LivePreviewPlayer } from '../components/LivePreviewPlayer';
 import { SceneStatusBadge } from '../components/SceneStatusBadge';
 import { BitrateChart } from '../components/BitrateChart';
@@ -80,8 +81,8 @@ export function ChannelDetail() {
         <div className="space-y-4">
           <StreamKeyBox
             streamKey={channel.streamKey}
-            rtmpUrl={`rtmp://<host>:1935/live/${channel.streamKey}`}
-            srtUrl={`srt://<host>:8890?streamid=publish:${channel.streamKey}`}
+            rtmpUrl={buildRtmpUrl(channel.streamKey)}
+            srtUrl={buildSrtUrl(channel.streamKey)}
             onRegenerate={async () => {
               const updated = await ChannelsApi.regenerateKey(id);
               setChannel(updated);
