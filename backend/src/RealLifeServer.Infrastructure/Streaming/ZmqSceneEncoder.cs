@@ -31,19 +31,39 @@ public sealed class ZmqSceneEncoder(
     IZmqPortAllocator portAllocator,
     ILoggerFactory loggerFactory) : ISceneEncoder
 {
+    /// <summary>
+    /// Explicit lifecycle for the currently-tracked <see cref="Process"/>, so the Exited event
+    /// handler can tell "this is a genuine unexpected runtime crash" apart from "this process is
+    /// exiting because we're in the middle of starting or intentionally stopping it" without
+    /// racing against *when* Exited happens to fire. The state is always set *before* the action
+    /// that could trigger Exited (Start/Kill), never inferred from event timing - that is what
+    /// makes the check race-free: Exited only ever reads a value that was already stable before
+    /// the OS-level exit could possibly have happened.
+    /// </summary>
+    private enum LifecycleState { Starting, Ready, Stopping, Exited }
+
     private static readonly TimeSpan StartupGracePeriod = TimeSpan.FromMilliseconds(300);
     private static readonly TimeSpan ReadinessTimeout = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan ReadinessPollInterval = TimeSpan.FromMilliseconds(250);
+
+    /// <summary>
+    /// Redirected-stream callbacks (ErrorDataReceived) are not guaranteed to have all fired by
+    /// the time WaitForExitAsync returns - this bounds how long a failed startup waits for the
+    /// last buffered stderr lines before building the failure message from whatever arrived.
+    /// </summary>
+    private static readonly TimeSpan StderrDrainGracePeriod = TimeSpan.FromMilliseconds(100);
+
     private const int MaxBufferedStderrLines = 40;
 
     private readonly ILogger _logger = loggerFactory.CreateLogger($"SceneEncoder[{channelId}]");
     private readonly object _stderrLock = new();
     private readonly List<string> _stderrTail = [];
+    private readonly object _lifecycleLock = new();
 
+    private LifecycleState _lifecycleState = LifecycleState.Exited;
     private Process? _process;
     private ZmqFilterController? _zmq;
     private CompositorPlan? _plan;
-    private bool _intentionalStop;
 
     private Channel? _channel;
     private IReadOnlyList<string>? _destinationRtmpUrls;
@@ -167,6 +187,7 @@ public sealed class ZmqSceneEncoder(
     {
         _plan = plan;
         ClearStderrTail();
+        SetLifecycleState(LifecycleState.Starting);
 
         _logger.LogInformation(
             "Channel {ChannelId}: starting compositor ({Mode} mode) with command: {Command} {Arguments}",
@@ -200,15 +221,22 @@ public sealed class ZmqSceneEncoder(
         process.Exited += (_, _) =>
         {
             portAllocator.Release(channelId);
-            if (!_intentionalStop)
+
+            // Only report a crash if this process was previously confirmed Ready. An exit while
+            // Starting is handled synchronously by the readiness loop below (it throws a
+            // descriptive exception); an exit while Stopping/Exited is intentional (StopAsync,
+            // a mode-switch restart, or FailRunningAsync already killed this process on
+            // purpose). Reading a state set *before* Start()/Kill() - not a flag raced against
+            // this event's arrival time - is what makes this check safe regardless of how
+            // quickly the process exits.
+            if (GetLifecycleState() == LifecycleState.Ready)
             {
-                var code = process.ExitCode;
+                var code = SafeReadExitCode(process) ?? -1;
                 _logger.LogWarning("Compositor for channel {ChannelId} exited unexpectedly with code {Code}", channelId, code);
                 ProcessExitedUnexpectedly?.Invoke(channelId, code);
             }
         };
 
-        _intentionalStop = false;
         process.Start();
         process.BeginErrorReadLine();
         _process = process;
@@ -237,6 +265,7 @@ public sealed class ZmqSceneEncoder(
                 // graph and the zmq filter is actually accepting commands (item 3).
                 await zmq.SetOverlayEnabledAsync(plan.OfflineOverlayName, !plan.HasLiveInput, ct);
                 _zmq = zmq;
+                SetLifecycleState(LifecycleState.Ready);
                 _logger.LogInformation("Compositor for channel {ChannelId} is ready (zmq port {Port})", channelId, plan.ZmqPort);
                 return;
             }
@@ -260,9 +289,16 @@ public sealed class ZmqSceneEncoder(
         throw await FailStartupAsync(process, zmq, timeoutMessage, lastProbeError);
     }
 
+    /// <summary>
+    /// Terminates <paramref name="process"/> (if still alive) and builds a descriptive
+    /// exception, then disposes it. Order matters: exit code and stderr are captured *before*
+    /// Dispose() - Process throws InvalidOperationException("No process is associated with this
+    /// object.") from ExitCode (and most other members) once disposed, which previously replaced
+    /// the intended failure message with that unhelpful one.
+    /// </summary>
     private async Task<InvalidOperationException> FailStartupAsync(Process process, ZmqFilterController? zmq, string? overrideMessage = null, Exception? innerException = null)
     {
-        _intentionalStop = true; // suppress the Exited handler's own duplicate crash signal - we surface this failure via the thrown exception instead
+        SetLifecycleState(LifecycleState.Stopping);
 
         if (process is { HasExited: false })
         {
@@ -277,23 +313,43 @@ public sealed class ZmqSceneEncoder(
             }
         }
 
+        // Give any already-in-flight ErrorDataReceived callbacks a moment to finish appending
+        // to the stderr buffer before we read it - see StderrDrainGracePeriod.
+        await Task.Delay(StderrDrainGracePeriod, CancellationToken.None);
+
+        int? exitCode = SafeReadExitCode(process);
+        var tail = GetStderrTail();
+
         if (zmq is not null)
         {
             await zmq.DisposeAsync();
         }
-
         process.Dispose();
         _process = null;
+        SetLifecycleState(LifecycleState.Exited);
 
-        var tail = GetStderrTail();
-        var message = overrideMessage ??
-            $"Compositor for channel {channelId} exited during startup with code {process.ExitCode}.";
+        var message = overrideMessage ?? (exitCode is { } code
+            ? $"Compositor for channel {channelId} exited during startup with code {code}."
+            : $"Compositor for channel {channelId} exited during startup, but its exit code could not be determined.");
         if (tail.Length > 0)
         {
             message += $" FFmpeg output:\n{tail}";
         }
 
         return new InvalidOperationException(message, innerException);
+    }
+
+    /// <summary>Never lets Process's raw InvalidOperationException ("No process is associated with this object.") escape from an ExitCode read - item 8.</summary>
+    private static int? SafeReadExitCode(Process process)
+    {
+        try
+        {
+            return process.ExitCode;
+        }
+        catch (InvalidOperationException)
+        {
+            return null;
+        }
     }
 
     private async Task<bool> TrySendOverlayStateAsync(bool brb, bool reconnecting, bool offline, CancellationToken ct)
@@ -331,7 +387,7 @@ public sealed class ZmqSceneEncoder(
 
     private async Task FailRunningAsync(CancellationToken ct)
     {
-        _intentionalStop = true;
+        SetLifecycleState(LifecycleState.Stopping);
         if (_process is { HasExited: false } process)
         {
             process.Kill(entireProcessTree: true);
@@ -346,12 +402,13 @@ public sealed class ZmqSceneEncoder(
         }
         portAllocator.Release(channelId);
         await DisposeAsync();
+        SetLifecycleState(LifecycleState.Exited);
         ProcessExitedUnexpectedly?.Invoke(channelId, -1);
     }
 
     private async Task StopCurrentProcessAsync(CancellationToken ct)
     {
-        _intentionalStop = true;
+        SetLifecycleState(LifecycleState.Stopping);
         if (_process is { HasExited: false } process)
         {
             process.Kill(entireProcessTree: true);
@@ -365,17 +422,18 @@ public sealed class ZmqSceneEncoder(
             }
         }
         // The killed process's own Exited handler releases the port asynchronously; the
-        // immediate Allocate call below is idempotent per channel and typically observes the
-        // allocation still cached (Exited hasn't necessarily run yet), so the replacement
-        // process keeps the same port. Even in the rare case another channel's Allocate call
-        // races in between, this channel simply gets handed a different free port - the plan
-        // returned by BuildZmqCompositor is always used fresh, nothing assumes port stability.
+        // immediate Allocate call right after this returns is idempotent per channel and
+        // typically observes the allocation still cached (Exited hasn't necessarily run yet),
+        // so the replacement process keeps the same port. Even in the rare case another
+        // channel's Allocate call races in between, this channel simply gets handed a different
+        // free port - the plan returned by BuildZmqCompositor is always used fresh, nothing
+        // assumes port stability.
         await DisposeAsync();
     }
 
     public async Task StopAsync(CancellationToken ct = default)
     {
-        _intentionalStop = true;
+        SetLifecycleState(LifecycleState.Stopping);
         if (_process is { HasExited: false } process)
         {
             process.Kill(entireProcessTree: true);
@@ -384,6 +442,23 @@ public sealed class ZmqSceneEncoder(
 
         portAllocator.Release(channelId);
         await DisposeAsync();
+        SetLifecycleState(LifecycleState.Exited);
+    }
+
+    private void SetLifecycleState(LifecycleState state)
+    {
+        lock (_lifecycleLock)
+        {
+            _lifecycleState = state;
+        }
+    }
+
+    private LifecycleState GetLifecycleState()
+    {
+        lock (_lifecycleLock)
+        {
+            return _lifecycleState;
+        }
     }
 
     private void AppendStderrLine(string line)
