@@ -71,10 +71,6 @@ services:
       SceneAssets__BrbVideoPath: /assets/scenes/brb.mp4
       SceneAssets__ReconnectingVideoPath: /assets/scenes/reconnecting.mp4
       SceneAssets__OfflineVideoPath: /assets/scenes/offline.mp4
-      # TEMPORARY diagnostic for the DbUpdateConcurrencyException on POST .../destinations -
-      # shows the actual SQL EF Core sends (parameter values are NOT logged, so no secrets leak).
-      # Remove this line once the cause is confirmed.
-      Logging__LogLevel__Microsoft.EntityFrameworkCore.Database.Command: Information
     volumes:
       - ./deploy/assets/scenes:/assets/scenes:ro
     healthcheck:
