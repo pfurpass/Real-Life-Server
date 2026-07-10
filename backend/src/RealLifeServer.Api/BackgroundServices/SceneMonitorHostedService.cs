@@ -63,7 +63,7 @@ public class SceneMonitorHostedService(IServiceScopeFactory scopeFactory, ILogge
             // monitoring concern instead of a process-management one.
             if (!orchestrator.IsEncoderRunning(channel.Id))
             {
-                await orchestrator.EnsureEncoderRunningAsync(channel, channel.Destinations, ct);
+                await orchestrator.EnsureEncoderRunningAsync(channel, channel.Destinations.ToList(), ct);
                 await orchestrator.ApplySceneAsync(channel.Id, channel.CurrentSceneState, ct: ct);
             }
 
