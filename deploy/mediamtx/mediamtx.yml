@@ -28,7 +28,7 @@ webrtcAddress: :8889
 # --- Internal RTSP, used only by the compositor's live input (chapter 4.1) -----------------
 rtsp: yes
 rtspAddress: :8554
-protocols: [tcp]
+rtspTransports: [tcp]
 
 # --- Web preview -----------------------------------------------------------------------------
 hls: yes
@@ -36,23 +36,27 @@ hlsAddress: :8888
 hlsVariant: lowLatency
 hlsSegmentCount: 7
 hlsSegmentDuration: 1s
-hlsAllowOrigin: "*"
+hlsAllowOrigins: ["*"]
 
 # --- Auth gate: only "publish" actions are checked against RLS's channel table (chapter 3/10) -
 authMethod: http
 authHTTPAddress: http://api:8080/api/webhooks/mediamtx/auth
 
 # --- Per-path notification hooks (fire-and-forget, not gating - chapter 3) -----------------
+# MediaMTX execs these commands directly (no shell involved) - `sh -c '...'` is required for
+# $VAR expansion and quoting to work at all. The official bluenviron/mediamtx image is built
+# FROM scratch (binary only, no shell, no curl), so these commands only work with the custom
+# image built from deploy/mediamtx/Dockerfile (see docker-compose.yml's mediamtx service).
 pathDefaults:
   runOnReady: >
-    bash -c 'curl -s -o /dev/null -X POST
+    sh -c 'curl -s -o /dev/null -X POST
     -H "X-Webhook-Secret: $WEBHOOK_SECRET" -H "Content-Type: application/json"
     -d "{\"path\":\"$MTX_PATH\"}"
     http://api:8080/api/webhooks/mediamtx/ready'
   runOnReadyRestart: no
 
   runOnNotReady: >
-    bash -c 'curl -s -o /dev/null -X POST
+    sh -c 'curl -s -o /dev/null -X POST
     -H "X-Webhook-Secret: $WEBHOOK_SECRET" -H "Content-Type: application/json"
     -d "{\"path\":\"$MTX_PATH\"}"
     http://api:8080/api/webhooks/mediamtx/not-ready'

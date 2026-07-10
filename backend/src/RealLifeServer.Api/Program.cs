@@ -56,6 +56,18 @@ if (args.Contains("--migrate"))
     return;
 }
 
+// --- Startup: fail fast on invalid configuration --------------------------------------------
+// Forces IEncryptionService (AesGcmEncryptionService) to construct now, before any hosted
+// service starts. Without this, an invalid KEY_PROTECTION_MASTER_KEY only surfaces the first
+// time something resolves IStreamOrchestrator - inside SceneMonitorHostedService's 2-second
+// tick loop, whose catch-all logs and continues (correct for transient errors, wrong for a
+// permanent misconfiguration) - producing the same exception forever instead of one clear,
+// immediate startup failure.
+using (var startupScope = app.Services.CreateScope())
+{
+    startupScope.ServiceProvider.GetRequiredService<IEncryptionService>();
+}
+
 // --- Middleware pipeline --------------------------------------------------------------------
 
 app.UseMiddleware<ExceptionHandlingMiddleware>();

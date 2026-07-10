@@ -12,15 +12,51 @@ public class AesGcmEncryptionService : IEncryptionService
 {
     private const int NonceSize = 12;
     private const int TagSize = 16;
+    private const int RequiredKeyBytes = 32;
+
     private readonly byte[] _key;
 
     public AesGcmEncryptionService(IOptions<EncryptionSettings> options)
     {
-        _key = Convert.FromBase64String(options.Value.MasterKeyBase64);
-        if (_key.Length != 32)
+        _key = ValidateAndDecodeKey(options.Value.MasterKeyBase64);
+    }
+
+    /// <summary>
+    /// Decodes and validates the configured master key, or throws a precise, actionable
+    /// <see cref="InvalidOperationException"/>. Separated out so both the constructor and
+    /// <c>Program.cs</c>'s startup check (which forces this to run before any hosted service
+    /// starts, instead of on first use inside a retry loop) share one source of truth.
+    /// </summary>
+    internal static byte[] ValidateAndDecodeKey(string? masterKeyBase64)
+    {
+        const string howTo = "Generate one with: openssl rand -base64 32";
+
+        if (string.IsNullOrWhiteSpace(masterKeyBase64))
         {
-            throw new InvalidOperationException("KeyProtection:MasterKeyBase64 must decode to exactly 32 bytes (AES-256).");
+            throw new InvalidOperationException(
+                $"KeyProtection:MasterKeyBase64 (env var KEY_PROTECTION_MASTER_KEY) is not set. {howTo}");
         }
+
+        byte[] key;
+        try
+        {
+            key = Convert.FromBase64String(masterKeyBase64.Trim());
+        }
+        catch (FormatException ex)
+        {
+            throw new InvalidOperationException(
+                "KeyProtection:MasterKeyBase64 (env var KEY_PROTECTION_MASTER_KEY) is not a valid Base64 string. " +
+                $"{howTo}", ex);
+        }
+
+        if (key.Length != RequiredKeyBytes)
+        {
+            throw new InvalidOperationException(
+                "KeyProtection:MasterKeyBase64 (env var KEY_PROTECTION_MASTER_KEY) must decode to exactly " +
+                $"{RequiredKeyBytes} bytes for AES-256, but decoded to {key.Length} byte(s). {howTo}");
+        }
+
+        return key;
     }
 
     public string Encrypt(string plainText)

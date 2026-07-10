@@ -23,4 +23,8 @@
     <ProjectReference Include="..\RealLifeServer.Infrastructure\RealLifeServer.Infrastructure.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="RealLifeServer.Api.Tests" />
+  </ItemGroup>
+
 </Project>

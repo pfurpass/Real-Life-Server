@@ -268,8 +268,9 @@ BRB          --EncoderConnected----------------------------------> Connecting  (
 BRB          --ManualStop----------------------------------------> Offline
 ```
 
-`EncoderConnected` entspricht dem MediaMTX `runOnPublish`-Webhook (Verbindung steht),
-`FirstKeyframeReceived` dem `runOnReady`-Webhook (erster Frame lesbar). Reconnecting/BRB
+`EncoderConnected` entspricht einer erfolgreichen `publish`-Prüfung am `authHTTPAddress`-Endpoint
+(`POST /api/webhooks/mediamtx/auth`, Kapitel 3 Schritt 2), `FirstKeyframeReceived` dem
+`runOnReady`-Webhook (erster Frame lesbar). Reconnecting/BRB
 durchlaufen beim Wiederverbinden bewusst erneut `Connecting`, statt direkt nach `Live` zu
 springen — so gilt derselbe `ConnectTimeoutSeconds`-Schutz wie beim Erstverbinden, und es gibt
 nur einen Codepfad für "auf ersten Keyframe warten".
@@ -533,8 +534,17 @@ Rollen via `[Authorize(Roles = "Admin,Moderator")]`.
 - **Rate Limiting**: ASP.NET Core `Microsoft.AspNetCore.RateLimiting`, striktere Policy für
   `/api/auth/login` (Brute-Force-Schutz, Fixed-Window 5 Versuche/Minute/IP) und
   `/api/webhooks/*` (Schutz vor Callback-Flooding).
-- **Webhook-Absicherung**: MediaMTX-Callbacks werden mit einem Shared-Secret-Header
-  (`X-Webhook-Secret`) validiert, zusätzlich auf `127.0.0.1`/internes Docker-Netz beschränkt.
+- **Webhook-Absicherung**: unterschiedlich je Hook-Typ, da MediaMTX unterschiedliche Fähigkeiten
+  bietet. `runOnReady`/`runOnNotReady` sind von uns selbst formulierte Shell-Kommandos
+  (`deploy/mediamtx/mediamtx.yml`) und tragen deshalb einen `X-Webhook-Secret`-Header, den RLS
+  prüft. Der synchrone Auth-Gate-Endpoint (`authHTTPAddress`, `POST /api/webhooks/mediamtx/auth`)
+  wird dagegen von MediaMTX selbst mit einem fest vorgegebenen JSON-Body und **ohne
+  konfigurierbare Header** aufgerufen — ein Secret-Header lässt sich dort technisch nicht setzen.
+  Seine Sicherheit beruht stattdessen auf zwei Dingen: (a) für `action=publish` wird der reale
+  Stream-Key gegen die `channels`-Tabelle geprüft, (b) der gesamte `/api/webhooks/*`-Präfix ist
+  ausschließlich im internen Docker-Netz erreichbar — der `api`-Container veröffentlicht keinen
+  Host-Port, und der öffentliche Nginx-Reverse-Proxy blockt `/api/webhooks/` explizit
+  (`deploy/nginx/nginx.conf`).
 - **CORS**: Whitelist der Frontend-Origin aus Konfiguration, keine Wildcards in Produktion.
 - **Audit-Log**: sicherheitsrelevante Aktionen (Login, Key-Regenerierung, Rollenänderung,
   manuelle Szenen-Overrides) werden in `audit_log_entries` protokolliert.

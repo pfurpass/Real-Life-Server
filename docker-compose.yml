@@ -26,7 +26,10 @@ services:
       retries: 10
 
   mediamtx:
-    image: bluenviron/mediamtx:latest
+    # Custom-built (see deploy/mediamtx/Dockerfile): the official bluenviron/mediamtx image is
+    # FROM scratch and has no shell/curl, which the runOnReady/runOnNotReady hooks below need.
+    build:
+      context: ./deploy/mediamtx
     restart: unless-stopped
     environment:
       WEBHOOK_SECRET: ${WEBHOOK_SECRET:?set WEBHOOK_SECRET in .env}
@@ -37,6 +40,11 @@ services:
       - "8890:8890/udp" # SRT ingest
       - "8889:8889" # WebRTC/WHIP
       - "8888:8888" # HLS (also proxied via nginx at /hls)
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9997/v3/paths/list"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
 
   api:
     build:
@@ -94,9 +102,12 @@ services:
     image: nginx:1.27-alpine
     restart: unless-stopped
     depends_on:
-      - api
-      - frontend
-      - mediamtx
+      api:
+        condition: service_healthy
+      frontend:
+        condition: service_started
+      mediamtx:
+        condition: service_healthy
     ports:
       - "80:80"
       - "443:443"
