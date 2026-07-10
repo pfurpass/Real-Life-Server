@@ -1,0 +1,62 @@
+# MediaMTX configuration - the ingest/protocol gateway described in docs/CONCEPT.md, chapter 2.
+# RealLifeServer (the "api" service) is the control plane; MediaMTX is the media plane: it
+# terminates RTMP/SRT/WHIP from the encoder, serves HLS for the web preview, and lets the
+# compositor pull the live feed back out over RTSP (chapter 4.1).
+#
+# Config keys below target MediaMTX v1.x. Check `mediamtx --version` against
+# https://github.com/bluenviron/mediamtx if you're on a different major version - some key
+# names have changed across releases.
+
+logLevel: info
+logDestinations: [stdout]
+
+# --- Control API (polled by MediaMtxClient for ingest stats, chapter 12) -------------------
+api: yes
+apiAddress: :9997
+
+# --- Ingest protocols exposed to the encoder ------------------------------------------------
+rtmp: yes
+rtmpAddress: :1935
+
+srt: yes
+srtAddress: :8890
+
+webrtc: yes
+webrtcAddress: :8889
+# WHIP publish endpoint becomes: http://<host>:8889/live/{streamKey}/whip
+
+# --- Internal RTSP, used only by the compositor's live input (chapter 4.1) -----------------
+rtsp: yes
+rtspAddress: :8554
+protocols: [tcp]
+
+# --- Web preview -----------------------------------------------------------------------------
+hls: yes
+hlsAddress: :8888
+hlsVariant: lowLatency
+hlsSegmentCount: 7
+hlsSegmentDuration: 1s
+hlsAllowOrigin: "*"
+
+# --- Auth gate: only "publish" actions are checked against RLS's channel table (chapter 3/10) -
+authMethod: http
+authHTTPAddress: http://api:8080/api/webhooks/mediamtx/auth
+
+# --- Per-path notification hooks (fire-and-forget, not gating - chapter 3) -----------------
+pathDefaults:
+  runOnReady: >
+    bash -c 'curl -s -o /dev/null -X POST
+    -H "X-Webhook-Secret: $WEBHOOK_SECRET" -H "Content-Type: application/json"
+    -d "{\"path\":\"$MTX_PATH\"}"
+    http://api:8080/api/webhooks/mediamtx/ready'
+  runOnReadyRestart: no
+
+  runOnNotReady: >
+    bash -c 'curl -s -o /dev/null -X POST
+    -H "X-Webhook-Secret: $WEBHOOK_SECRET" -H "Content-Type: application/json"
+    -d "{\"path\":\"$MTX_PATH\"}"
+    http://api:8080/api/webhooks/mediamtx/not-ready'
+
+paths:
+  # Matches every "live/{streamKey}" path - one channel, one path, created on demand.
+  all_others:

@@ -1,0 +1,20 @@
+# .NET
+backend/**/bin/
+backend/**/obj/
+*.user
+
+# Node / frontend
+frontend/node_modules/
+frontend/dist/
+
+# Env / secrets
+.env
+deploy/nginx/certs/
+
+# Generated placeholder scene videos (deploy/assets/scenes/generate-placeholders.sh)
+deploy/assets/scenes/*.mp4
+
+# OS / editor
+.DS_Store
+.vs/
+.idea/
