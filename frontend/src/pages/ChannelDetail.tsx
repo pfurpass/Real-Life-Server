@@ -6,6 +6,7 @@ import { LivePreviewPlayer } from '../components/LivePreviewPlayer';
 import { SceneStatusBadge } from '../components/SceneStatusBadge';
 import { BitrateChart } from '../components/BitrateChart';
 import { StreamKeyBox } from '../components/StreamKeyBox';
+import { DestinationManager } from '../components/DestinationManager';
 import { LogPanel } from '../components/LogPanel';
 import { SceneControlPanel } from '../components/SceneControlPanel';
 import { useStreamHub } from '../hooks/useStreamHub';
@@ -88,6 +89,7 @@ export function ChannelDetail() {
               setChannel(updated);
             }}
           />
+          <DestinationManager channelId={id} destinations={channel.destinations} onReload={reload} />
           <LogPanel events={events} />
         </div>
       </div>

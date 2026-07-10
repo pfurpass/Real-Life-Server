@@ -3,7 +3,7 @@ using RealLifeServer.Domain.Enums;
 
 namespace RealLifeServer.Application.Channels.Dtos;
 
-public sealed record StreamDestinationDto(Guid Id, StreamPlatform Platform, string RtmpUrl, bool IsEnabled);
+public sealed record StreamDestinationDto(Guid Id, StreamPlatform Platform, string RtmpUrl, bool IsEnabled, short DisplayOrder);
 
 public sealed record ChannelDto(
     Guid Id,
@@ -30,7 +30,7 @@ public sealed record ChannelDto(
         channel.CompositorStrategy,
         channel.Destinations
             .OrderBy(d => d.DisplayOrder)
-            .Select(d => new StreamDestinationDto(d.Id, d.Platform, d.RtmpUrl, d.IsEnabled))
+            .Select(d => new StreamDestinationDto(d.Id, d.Platform, d.RtmpUrl, d.IsEnabled, d.DisplayOrder))
             .ToList(),
         channel.CreatedAt);
 }

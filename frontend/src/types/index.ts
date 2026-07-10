@@ -41,6 +41,7 @@ export interface StreamDestinationDto {
   platform: StreamPlatform;
   rtmpUrl: string;
   isEnabled: boolean;
+  displayOrder: number;
 }
 
 export interface ChannelDto {

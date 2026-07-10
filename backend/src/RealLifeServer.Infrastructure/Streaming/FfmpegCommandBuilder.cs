@@ -141,7 +141,9 @@ public class FfmpegCommandBuilder(IOptions<MediaMtxOptions> mediaMtxOptions, IOp
         }
 
         // Multiple simultaneous destinations (e.g. Twitch + YouTube) via the tee muxer.
-        var teeTarget = string.Join("|", destinationRtmpUrls.Select(url => $"[f=flv]{url}"));
+        // onfail=ignore on each target: one platform rejecting the stream (bad key, outage,
+        // rate limit) must not take the other, still-healthy outputs down with it.
+        var teeTarget = string.Join("|", destinationRtmpUrls.Select(url => $"[f=flv:onfail=ignore]{url}"));
         return new[] { "-f", "tee", teeTarget };
     }
 }

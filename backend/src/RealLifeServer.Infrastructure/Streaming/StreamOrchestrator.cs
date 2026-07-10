@@ -59,8 +59,11 @@ public class StreamOrchestrator(
         var encoder = encoderFactory.Create(channel);
         encoder.ProcessExitedUnexpectedly += OnEncoderCrashed;
 
+        // Order matters here: it becomes the tee muxer's target order in FfmpegCommandBuilder,
+        // so DisplayOrder changes need the same restart as adding/removing/toggling a destination.
         var resolvedUrls = destinations
             .Where(d => d.IsEnabled)
+            .OrderBy(d => d.DisplayOrder)
             .Select(d => $"{d.RtmpUrl.TrimEnd('/')}/{encryption.Decrypt(d.StreamKeyEncrypted)}")
             .ToList();
 

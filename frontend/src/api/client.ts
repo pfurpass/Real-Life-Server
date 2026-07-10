@@ -1,6 +1,14 @@
 import axios, { type AxiosInstance } from 'axios';
 import type { AuthResult } from '../types';
 
+/** Extracts the backend's ExceptionHandlingMiddleware `{ status, title }` body, if present. */
+export function extractErrorMessage(err: unknown, fallback: string): string {
+  if (axios.isAxiosError(err) && typeof err.response?.data?.title === 'string') {
+    return err.response.data.title;
+  }
+  return fallback;
+}
+
 const ACCESS_TOKEN_KEY = 'rls.accessToken';
 const REFRESH_TOKEN_KEY = 'rls.refreshToken';
 

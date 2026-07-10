@@ -141,6 +141,19 @@ public class FfmpegCommandBuilderTests
     }
 
     [Fact]
+    public void SingleDestination_UsesPlainFlvOutput()
+    {
+        var builder = CreateBuilder(out _, out _);
+        var destination = "rtmp://live.twitch.tv/app/twitchkey";
+        var plan = builder.BuildZmqCompositor(CreateChannel(), [destination], zmqPort: 15008, includeLiveInput: true);
+
+        var flvArgIndex = plan.Arguments.ToList().IndexOf("flv");
+        Assert.True(flvArgIndex >= 0);
+        Assert.Equal(destination, plan.Arguments[flvArgIndex + 1]);
+        Assert.DoesNotContain("tee", plan.Arguments);
+    }
+
+    [Fact]
     public void MultipleDestinations_UsesTeeMuxerWithBothTargets()
     {
         var builder = CreateBuilder(out _, out _);
@@ -152,5 +165,21 @@ public class FfmpegCommandBuilderTests
         var teeTarget = plan.Arguments[teeArgIndex + 1];
         Assert.Contains(destinations[0], teeTarget);
         Assert.Contains(destinations[1], teeTarget);
+    }
+
+    [Fact]
+    public void MultipleDestinations_EachTeeTargetUsesOnfailIgnore()
+    {
+        // So one platform rejecting the stream (bad key, outage) doesn't take the other,
+        // still-healthy outputs down with it.
+        var builder = CreateBuilder(out _, out _);
+        var destinations = new[] { "rtmp://live.twitch.tv/app/twitchkey", "rtmp://a.rtmp.youtube.com/live2/youtubekey" };
+        var plan = builder.BuildZmqCompositor(CreateChannel(), destinations, zmqPort: 15009, includeLiveInput: true);
+
+        var teeArgIndex = plan.Arguments.ToList().IndexOf("tee");
+        var teeTarget = plan.Arguments[teeArgIndex + 1];
+        var targets = teeTarget.Split('|');
+        Assert.Equal(destinations.Length, targets.Length);
+        Assert.All(targets, t => Assert.StartsWith("[f=flv:onfail=ignore]", t, StringComparison.Ordinal));
     }
 }

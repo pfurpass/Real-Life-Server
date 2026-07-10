@@ -11,6 +11,9 @@ namespace RealLifeServer.Api.Controllers;
 public sealed record CreateChannelRequest(string Name, IngestProtocol IngestProtocols);
 public sealed record UpdateChannelRequest(string Name, bool IsActive, SceneThresholds Thresholds);
 public sealed record AddDestinationRequest(StreamPlatform Platform, string RtmpUrl, string StreamKey);
+public sealed record SetDestinationEnabledRequest(bool IsEnabled);
+public sealed record ReplaceDestinationKeyRequest(string StreamKey);
+public sealed record ReorderDestinationsRequest(IReadOnlyList<Guid> OrderedDestinationIds);
 
 [Route("api/channels")]
 public class ChannelsController(ISender mediator, ICurrentUserService currentUser, IChannelRepository channels)
@@ -72,5 +75,26 @@ public class ChannelsController(ISender mediator, ICurrentUserService currentUse
         await EnsureChannelAccessAsync(id, channels, ct);
         await Mediator.Send(new RemoveStreamDestinationCommand(id, destinationId), ct);
         return NoContent();
+    }
+
+    [HttpPut("{id:guid}/destinations/{destinationId:guid}/enabled")]
+    public async Task<IActionResult> SetDestinationEnabled(Guid id, Guid destinationId, SetDestinationEnabledRequest request, CancellationToken ct)
+    {
+        await EnsureChannelAccessAsync(id, channels, ct);
+        return Ok(await Mediator.Send(new SetStreamDestinationEnabledCommand(id, destinationId, request.IsEnabled), ct));
+    }
+
+    [HttpPost("{id:guid}/destinations/{destinationId:guid}/stream-key")]
+    public async Task<IActionResult> ReplaceDestinationKey(Guid id, Guid destinationId, ReplaceDestinationKeyRequest request, CancellationToken ct)
+    {
+        await EnsureChannelAccessAsync(id, channels, ct);
+        return Ok(await Mediator.Send(new ReplaceStreamDestinationKeyCommand(id, destinationId, request.StreamKey), ct));
+    }
+
+    [HttpPut("{id:guid}/destinations/order")]
+    public async Task<IActionResult> ReorderDestinations(Guid id, ReorderDestinationsRequest request, CancellationToken ct)
+    {
+        await EnsureChannelAccessAsync(id, channels, ct);
+        return Ok(await Mediator.Send(new ReorderStreamDestinationsCommand(id, request.OrderedDestinationIds), ct));
     }
 }

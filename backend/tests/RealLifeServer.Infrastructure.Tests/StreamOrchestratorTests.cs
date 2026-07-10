@@ -118,6 +118,27 @@ public class StreamOrchestratorTests
     }
 
     [Fact]
+    public async Task EnsureEncoderRunningAsync_OrdersEnabledDestinationsByDisplayOrder_AndSkipsDisabled()
+    {
+        // DisplayOrder becomes the tee muxer's target order (FfmpegCommandBuilder.BuildOutputArgs) -
+        // resolving them out of order would silently swap which destination is listed first.
+        var factory = new FakeSceneEncoderFactory();
+        var sut = CreateSut(factory);
+        var channel = CreateChannel();
+        var destinations = new[]
+        {
+            new StreamDestination { Id = Guid.NewGuid(), ChannelId = channel.Id, IsEnabled = true, DisplayOrder = 1, RtmpUrl = "rtmp://second", StreamKeyEncrypted = "b" },
+            new StreamDestination { Id = Guid.NewGuid(), ChannelId = channel.Id, IsEnabled = false, DisplayOrder = 0, RtmpUrl = "rtmp://disabled", StreamKeyEncrypted = "x" },
+            new StreamDestination { Id = Guid.NewGuid(), ChannelId = channel.Id, IsEnabled = true, DisplayOrder = 0, RtmpUrl = "rtmp://first", StreamKeyEncrypted = "a" }
+        };
+
+        await sut.EnsureEncoderRunningAsync(channel, destinations, CancellationToken.None);
+
+        var expected = new List<string> { "rtmp://first/a", "rtmp://second/b" };
+        Assert.Equal(expected, factory.LastCreated!.LastStartDestinationRtmpUrls);
+    }
+
+    [Fact]
     public async Task StopEncoderAsync_RemovesAndStopsTheEncoder()
     {
         var factory = new FakeSceneEncoderFactory();
@@ -141,6 +162,7 @@ public class StreamOrchestratorTests
     {
         public Exception? FailStartWith { get; set; }
         public int StopCallCount { get; private set; }
+        public IReadOnlyList<string>? LastStartDestinationRtmpUrls { get; private set; }
 
         public Guid ChannelId => channelId;
         public bool IsRunning { get; private set; }
@@ -149,6 +171,7 @@ public class StreamOrchestratorTests
 
         public Task StartAsync(Channel channel, IReadOnlyList<string> destinationRtmpUrls, CancellationToken ct = default)
         {
+            LastStartDestinationRtmpUrls = destinationRtmpUrls;
             if (FailStartWith is { } ex)
             {
                 throw ex;

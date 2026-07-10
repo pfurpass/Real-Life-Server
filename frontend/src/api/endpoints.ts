@@ -28,7 +28,13 @@ export const ChannelsApi = {
   addDestination: (id: string, platform: StreamPlatform, rtmpUrl: string, streamKey: string) =>
     apiClient.post<ChannelDto>(`/channels/${id}/destinations`, { platform, rtmpUrl, streamKey }).then((r) => r.data),
   removeDestination: (id: string, destinationId: string) =>
-    apiClient.delete(`/channels/${id}/destinations/${destinationId}`)
+    apiClient.delete(`/channels/${id}/destinations/${destinationId}`),
+  setDestinationEnabled: (id: string, destinationId: string, isEnabled: boolean) =>
+    apiClient.put<ChannelDto>(`/channels/${id}/destinations/${destinationId}/enabled`, { isEnabled }).then((r) => r.data),
+  replaceDestinationKey: (id: string, destinationId: string, streamKey: string) =>
+    apiClient.post<ChannelDto>(`/channels/${id}/destinations/${destinationId}/stream-key`, { streamKey }).then((r) => r.data),
+  reorderDestinations: (id: string, orderedDestinationIds: string[]) =>
+    apiClient.put<ChannelDto>(`/channels/${id}/destinations/order`, { orderedDestinationIds }).then((r) => r.data)
 };
 
 export const StreamsApi = {
