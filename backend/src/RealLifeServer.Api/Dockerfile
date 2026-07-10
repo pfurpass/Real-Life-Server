@@ -22,8 +22,11 @@ RUN dotnet publish src/RealLifeServer.Api/RealLifeServer.Api.csproj -c Release -
 FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS runtime
 WORKDIR /app
 
+# wget is for docker-compose.yml's healthcheck - the aspnet base image does not include it by
+# default, which otherwise makes every healthcheck attempt fail with "wget: not found" (exit
+# 127) even though the app itself is running fine.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg \
+    && apt-get install -y --no-install-recommends ffmpeg wget \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /app .
