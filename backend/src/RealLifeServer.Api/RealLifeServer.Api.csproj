@@ -9,6 +9,10 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- Not part of the Microsoft.AspNetCore.App shared framework (it depends on the
+         third-party Microsoft.IdentityModel.* token-handling stack), so it always needs an
+         explicit package reference even in a Sdk.Web project - unlike e.g. HttpContextAccessor. -->
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="8.0.10" />
     <PackageReference Include="Swashbuckle.AspNetCore" Version="6.9.0" />
     <PackageReference Include="AspNetCore.HealthChecks.NpgSql" Version="8.0.2" />
     <PackageReference Include="Microsoft.AspNetCore.SignalR.StackExchangeRedis" Version="8.0.10" />
