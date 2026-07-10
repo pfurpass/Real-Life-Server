@@ -182,7 +182,7 @@ public class StreamDestinationCommandsTests
 
         Assert.NotEqual("enc:old-key", destination.StreamKeyEncrypted);
         Assert.DoesNotContain("brand-new-key", destination.StreamKeyEncrypted, StringComparison.Ordinal);
-        Assert.Equal("enc:brand-new-key", destination.StreamKeyEncrypted); // FakeEncryptionService's own format, but never plaintext
+        Assert.Equal("brand-new-key", new FakeEncryptionService().Decrypt(destination.StreamKeyEncrypted)); // encrypted, but round-trips correctly
         Assert.Equal(channel.Id, Assert.Single(orchestrator.StoppedChannelIds));
     }
 
@@ -315,10 +315,16 @@ public class StreamDestinationCommandsTests
         public Task<int> SaveChangesAsync(CancellationToken cancellationToken = default) => Task.FromResult(1);
     }
 
+    /// <summary>
+    /// Base64, not a readable prefix: a fake that just prepended "enc:" would trivially still
+    /// contain the plaintext as a substring, which defeats the point of the
+    /// Assert.DoesNotContain checks below (the real AesGcmEncryptionService doesn't leak
+    /// plaintext into its ciphertext either - see AesGcmEncryptionServiceTests for that).
+    /// </summary>
     private sealed class FakeEncryptionService : IEncryptionService
     {
-        public string Encrypt(string plainText) => $"enc:{plainText}";
-        public string Decrypt(string cipherText) => cipherText.StartsWith("enc:", StringComparison.Ordinal) ? cipherText[4..] : cipherText;
+        public string Encrypt(string plainText) => Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(plainText));
+        public string Decrypt(string cipherText) => System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(cipherText));
     }
 
     private sealed class FakeStreamOrchestrator : IStreamOrchestrator
