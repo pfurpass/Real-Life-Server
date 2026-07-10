@@ -29,7 +29,7 @@ public sealed class RestartableFallbackSceneEncoder(
     private SceneState _currentState = SceneState.Offline;
     private bool _intentionalStop;
 
-    public Guid ChannelId { get; } = channelId;
+    public Guid ChannelId => channelId;
     public bool IsRunning => _process is { HasExited: false };
 
     public event Action<Guid, int>? ProcessExitedUnexpectedly;

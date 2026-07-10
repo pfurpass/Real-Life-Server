@@ -23,7 +23,7 @@ public sealed class ZmqSceneEncoder(
     private CompositorPlan? _plan;
     private bool _intentionalStop;
 
-    public Guid ChannelId { get; } = channelId;
+    public Guid ChannelId => channelId;
     public bool IsRunning => _process is { HasExited: false };
 
     /// <summary>Raised when the FFmpeg process exits unexpectedly (crash, killed) so the orchestrator can react.</summary>

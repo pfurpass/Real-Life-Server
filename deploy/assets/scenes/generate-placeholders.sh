@@ -7,10 +7,13 @@ cd "$(dirname "$0")"
 
 make_slate () {
   local file=$1 text=$2 color=$3
-  ffmpeg -y -f lavfi -i "color=c=${color}:s=1280x720:d=10:r=30" \
+  # Both -i inputs must come before any output option (-vf here) - an option placed between
+  # two -i flags is parsed as an input option for the *following* input, not an output filter.
+  ffmpeg -y \
+    -f lavfi -i "color=c=${color}:s=1280x720:d=10:r=30" \
+    -f lavfi -i "anullsrc=r=44100:cl=stereo" \
     -vf "drawtext=fontcolor=white:fontsize=54:x=(w-text_w)/2:y=(h-text_h)/2:text='${text}'" \
-    -f lavfi -i "anullsrc=r=44100:cl=stereo" -shortest \
-    -c:v libx264 -pix_fmt yuv420p -c:a aac -t 10 "${file}"
+    -shortest -c:v libx264 -pix_fmt yuv420p -c:a aac -t 10 "${file}"
 }
 
 make_slate brb.mp4           "Be Right Back"                      "0x1e293b"

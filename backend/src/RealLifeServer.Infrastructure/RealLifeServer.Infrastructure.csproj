@@ -7,11 +7,23 @@
     <RootNamespace>RealLifeServer.Infrastructure</RootNamespace>
   </PropertyGroup>
 
+  <!--
+    Gives this class library access to the full ASP.NET Core shared framework (HttpContextAccessor,
+    ClaimsPrincipal.FindFirstValue, etc.) without pulling in old standalone NuGet packages like
+    Microsoft.AspNetCore.Http.Abstractions 2.2.0, which predates .NET Core 3 and both lacks
+    FindFirstValue/AddHttpContextAccessor and can shadow the real net8.0 types, as seen in the
+    dotnet publish errors CS1061 on ClaimsPrincipal.FindFirstValue and IServiceCollection.AddHttpContextAccessor.
+  -->
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
   <ItemGroup>
     <PackageReference Include="Microsoft.EntityFrameworkCore" Version="8.0.10" />
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="8.0.10" />
-    <PackageReference Include="Microsoft.AspNetCore.Http.Abstractions" Version="2.2.0" />
-    <PackageReference Include="Microsoft.Extensions.Http" Version="8.0.1" />
+    <!-- Microsoft.Extensions.Http (AddHttpClient/IHttpClientFactory) is already provided by the
+         Microsoft.AspNetCore.App FrameworkReference above; referencing the package explicitly
+         here would risk an SDK NETSDK1080 conflict warning/error. -->
     <PackageReference Include="Microsoft.IdentityModel.Tokens" Version="8.2.1" />
     <PackageReference Include="System.IdentityModel.Tokens.Jwt" Version="8.2.1" />
     <PackageReference Include="BCrypt.Net-Next" Version="4.0.3" />
